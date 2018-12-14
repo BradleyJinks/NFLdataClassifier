@@ -1,6 +1,10 @@
 import requests
 import csv
 from bs4 import BeautifulSoup
+import weka.core.jvm as jvm
+from weka.classifiers import Classifier
+from weka.core.converters import Loader, Saver
+import matplotlib.pyplot as plt
 
 def num(s):
     # Convert to number or float depending on value
@@ -9,7 +13,28 @@ def num(s):
     except ValueError:
         return float(s)
 
-def getStatsForYear(years):
+"""
+This functions gets all the stats for the NFl for the entered years and returns them
+
+Parameters
+----------
+years : array
+    The years from and to for the stats to be generated
+
+Returns
+-------
+array
+    A list of all player stats sorted into there own array per player
+
+Raises
+------
+TODO: Sort This
+KeyError
+    when a key error
+OtherError
+    when an other error
+"""
+def getStatsForYearNFL(years):
     # Init Vars
     newData = []
 
@@ -43,9 +68,72 @@ def getStatsForYear(years):
                 newData.append(tempArr)
     return newData
 
-def writePlayerFile(data):
+def getStatsForYearCOL(years):
+    # Init Vars
+    newData = []
 
-    with open('players.csv', mode='w') as player_file:
+    # For the supplied years
+    for year in years:
+        # Incase the second page needs to be evaluated(Data is irrelevant at the moment)
+        for page in [1]:
+            # Get player data
+            if page==1:
+                page =''
+            else:
+                page=str((page*40)+1)
+            data = requests.get('http://www.espn.com/college-football/statistics/player/_/stat/passing/sort/passingYards/year/'+str(year)+'/qualified/false'+page)
+
+            #Parse HTML into soup
+            soup = BeautifulSoup(data.text, 'html.parser')
+            #print(soup.select('tr'))
+            for bad in soup.findAll("tr", {'class': 'colhead'}):
+                bad.decompose()
+            # Find elements we care about
+            for tr in soup.findAll('tr'):
+                tempArr = []
+                # Data we care about begins at 5
+                for i in range(4, 13):
+                    for td in tr.select('td:nth-of-type(' + str(i) + ')'):
+                        # Sanitise the data to avoid problems down the line
+
+                        # temp = td.text.replace('\n', '')
+                        # temp = temp.replace('\t', '')
+                        # temp = temp.replace(',', '')
+                        # temp = temp.replace('T', '')
+                        # temp = temp.replace('--', '0')
+                        # Add player data element to arr
+                        tempArr.append(num(td.text))
+
+                    print(tempArr)
+                # Add player data row to main arr
+                newData.append(tempArr)
+    return newData
+
+"""
+This functions writs data to an entered file name in the sam folder as the python file
+
+Parameters
+----------
+fileName : array
+    The name of the file the data should be stored in (should always end in .csv)
+data : array
+    The array of data to be contained within the file
+
+Returns
+-------
+Null
+
+Raises
+------
+TODO: Sort This
+KeyError
+    when a key error
+OtherError
+    when an other error
+"""
+def writePlayerFile(fileName,data):
+
+    with open(fileName, mode='w') as player_file:
         player_writer = csv.writer(player_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
         # Write headers needed for csv use in weka
         player_writer.writerow(
@@ -56,39 +144,77 @@ def writePlayerFile(data):
         for row in data:
             player_writer.writerow(row)
 
-def classify():
-    # Get current years incomplete data
-    data = getStatsForYear([2018])
-    # Set data to vars  so it  can be classified
-    for row in data:
-        Comp=row[0]
-        Att=row[1]
-        Pct=row[2]
-        AttG=row[3]
-        Yds=row[4]
-        Avg=row[5]
-        YdsG=row[6]
-        TD=row[7]
-        Int=row[8]
-        oneSt=row[9]
-        onestPer=row[10]
-        Lng=row[11]
-        twoPlus=row[12]
-        fourPlus=row[13]
-        Sck=row[14]
-        Rate=row[15]
+def classify(fileToClassify, fileToCompare, predictionYear=None,pastResultYears=None):
+    # Start Java VM
+    jvm.start(max_heap_size="1024m")
+    # Load CSV files into weka loader
+    loader = Loader(classname="weka.core.converters.CSVLoader")
+    fileToClassifyData = loader.load_file(fileToClassify)
+    fileToClassifyData.class_is_last()
+    fileToCompareData = loader.load_file(fileToCompare)
+    fileToCompareData.class_is_last()
 
-        # This is where the magic happens
-        RateNew = -0.0581 * Comp + 0.1195 * Att + 0.9745 * Pct + 0.4078 * AttG + -0.0036 * Yds + 7.0455 * Avg + -0.072 * YdsG + 0.8261 * TD + -1.2793 * Int + -0.1613 * oneSt + 0.6321 * onestPer + 0.0382 * Lng + 0.0344 * twoPlus + -48.3837
+    # Generate Classifier based on data
+    classifier = Classifier(classname="weka.classifiers.functions.LinearRegression",
+                            options=["-S", "0", "-R", "1.0E-8", "-num-decimal-places", "4"])
+    classifier.build_classifier(fileToClassifyData)
 
-        # Print the actual rating and the one that's been classified
-        print('NFL Rating: {0}, My Rating {1}'.format(Rate, round(RateNew, 2)))
+    # Var builder for graph
+    count = 0.0
+    countPred = 0.0
+    graphDetails = [['TITLE'],['NFL Data Ratings (Official) {0}'.format(pastResultYears), [], []], ['NFL Data Ratings (Predicted) {0}'.format(predictionYear), [], []]]
 
-stats = getStatsForYear(range(2017,1999,-1))
+    # Time to predict results based on classifier
+    for index, inst in enumerate(fileToCompareData):
+        pred = classifier.classify_instance(inst)
+        countPred+=pred
+        count+=list(enumerate(inst))[15][1]
+        print("{0:.3f} accurate compared to results.".format(countPred/count))
 
-writePlayerFile(stats)
-classify()
-#print(stats)
+        dist = classifier.distribution_for_instance(inst)
+        # NFL Results
+        graphDetails[1][1].append(index + 1)
+        graphDetails[1][2].append(list(enumerate(inst))[15][1])
 
+        # Predicted Results
+        graphDetails[2][1].append(index + 1)
+        graphDetails[2][2].append(pred)
+        print(str(index + 1) +": label index=" + str(pred) + ", class distribution=" + str(dist)+" , original: "+ str(list(enumerate(inst))[15][1]))
+    graphDetails[0][0]='Player Rating Predictions For {0} ({1:.3f} Accurate)'.format(predictionYear,100-(countPred/count))
+    jvm.stop()
+    print(graphDetails)
+    BuildGraph(graphDetails)
 
+def BuildGraph(input):
+    # Set Labels
+    plt.xlabel('Player  Rank')
+    plt.ylabel('Player Rating')
 
+    plt.title(input.pop(0)[0])
+    # Plot Data on  graph
+    for row in input:
+        plt.plot(row[1], row[2],label=row[0])
+
+    # Add legend for data
+    plt.legend()
+
+    # Save and show fig
+    plt.savefig('test.png')
+    plt.show()
+
+# Set Vars
+# predictionYear =[2017]
+# pastResultYears =[2016,1999]
+# # Get stats for past years to classify
+# statsPast = getStatsForYearNFL(range(pastResultYears[0],pastResultYears[1],-1))
+# writePlayerFile('players_past.csv',statsPast)
+# # Get last full stats for predictions
+# stats = getStatsForYearNFL(predictionYear)
+# writePlayerFile('players_predict.csv',stats)
+#
+# classify('players_past.csv','players_predict.csv',predictionYear="".join(map(str, predictionYear)),pastResultYears="-".join(map(str, pastResultYears)))
+
+stats = getStatsForYearCOL([2017,2016])
+
+# TODO: Have different functions for different graphs
+# TODO: Have different functions for classifiers
